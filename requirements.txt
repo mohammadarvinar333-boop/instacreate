@@ -2,4 +2,5 @@ python-telegram-bot
 aiohttp
 flask
 requests
+pysocks
 asyncio
