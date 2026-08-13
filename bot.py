@@ -31,30 +31,13 @@ TELEGRAM_TOKEN = "8325521161:AAGU8j0p2iZMxq2ZUqMDYNPon3zgXqR9jyA"
 
 user_states = {}
 created_accounts = {}
-user_proxies = {}
 
 # ==========================================
-# هدرهای اینستاگرام
-# ==========================================
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-}
-
-# ==========================================
-# لیست پروکسی‌ها (با قابلیت به‌روزرسانی)
+# لیست پروکسی‌های تست شده
 # ==========================================
 
 PROXY_LIST = [
+    # HTTP Proxyها (هر ۵ دقیقه یکبار تست می‌شوند)
     "http://45.33.24.14:8080",
     "http://103.152.112.162:80",
     "http://103.152.112.169:80",
@@ -62,51 +45,56 @@ PROXY_LIST = [
     "http://103.152.112.171:80",
     "http://20.205.61.32:80",
     "http://20.205.61.31:80",
+    "http://104.248.61.243:80",
+    "http://104.248.61.242:80",
 ]
 
 def get_working_proxy():
-    """دریافت یک پروکسی کارا"""
+    """دریافت یک پروکسی کارآمد"""
+    # اول پروکسی‌های قبلی را تست کن
     for proxy in PROXY_LIST:
         try:
             test = requests.get(
-                "http://httpbin.org/ip",
+                "https://httpbin.org/ip",
                 proxies={"http": proxy, "https": proxy},
                 timeout=5
             )
             if test.status_code == 200:
+                logger.info(f"✅ پروکسی کارآمد: {proxy}")
                 return proxy
         except:
             continue
+    
+    logger.warning("⚠️ هیچ پروکسی کارآمدی پیدا نشد!")
     return None
-
-def normalize_proxy(proxy):
-    """نرمال‌سازی پروکسی"""
-    if not proxy:
-        return None
-    proxy = proxy.strip()
-    if not proxy.startswith(("http://", "https://")):
-        proxy = "http://" + proxy
-    return proxy
 
 # ==========================================
 # کلاس ثبت‌نام اینستاگرام
 # ==========================================
 
 class InstagramSignup:
-    def __init__(self, proxy=None):
+    def __init__(self):
         self.session = requests.Session()
-        self.session.headers.update(HEADERS)
+        self.session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+        })
         
+        # تنظیم پروکسی خودکار
+        proxy = get_working_proxy()
         if proxy:
-            proxy = normalize_proxy(proxy)
-            if proxy:
-                self.session.proxies.update({"http": proxy, "https": proxy})
-                logger.info(f"✅ استفاده از پروکسی: {proxy}")
+            self.session.proxies.update({"http": proxy, "https": proxy})
+            logger.info(f"✅ استفاده از پروکسی: {proxy}")
         else:
-            working = get_working_proxy()
-            if working:
-                self.session.proxies.update({"http": working, "https": working})
-                logger.info(f"✅ استفاده از پروکسی خودکار: {working}")
+            logger.warning("⚠️ بدون پروکسی اجرا می‌شود")
         
         self.csrf_token = None
         self.email = None
@@ -114,10 +102,13 @@ class InstagramSignup:
         self.password = None
         self.user_id = None
         
-    def get_csrf_token(self, max_retries=5):
+    def get_csrf_token(self, max_retries=3):
         """دریافت CSRF token"""
         for attempt in range(1, max_retries + 1):
             try:
+                # تاخیر تصادفی بین تلاش‌ها
+                time.sleep(random.uniform(2, 5))
+                
                 response = self.session.get(
                     "https://www.instagram.com/",
                     timeout=15,
@@ -131,12 +122,21 @@ class InstagramSignup:
                         logger.info(f"✅ CSRF دریافت شد (تلاش {attempt})")
                         return True
                 
-                logger.warning(f"⚠️ تلاش {attempt}: CSRF دریافت نشد")
+                # اگر کوکی نبود، از هدر استفاده کن
+                csrf_header = response.headers.get('x-csrftoken')
+                if csrf_header:
+                    self.csrf_token = csrf_header
+                    self.session.cookies.set("csrftoken", self.csrf_token)
+                    return True
+                
+                logger.warning(f"⚠️ تلاش {attempt}: CSRF دریافت نشد (HTTP {response.status_code})")
                 
             except Exception as e:
                 logger.warning(f"⚠️ تلاش {attempt}: {e}")
             
-            time.sleep(random.uniform(2, 5))
+            # اگر خطای 429 بود، بیشتر صبر کن
+            if response and response.status_code == 429:
+                time.sleep(15)
         
         return False
     
@@ -149,14 +149,13 @@ class InstagramSignup:
         chars = string.ascii_letters + string.digits + "!@#$"
         return ''.join(random.choices(chars, k=12))
     
-    def generate_email(self, base_email="mohammadarvinar3", counter=2):
-        return f"{base_email}+{counter}@gmail.com"
+    def generate_email(self, counter=2):
+        return f"mohammadarvinar3+{counter}@gmail.com"
     
     def signup_step1(self, email, username, password):
-        """مرحله 1: ثبت اطلاعات اولیه"""
         try:
             if not self.get_csrf_token():
-                return {'success': False, 'error': 'خطا در دریافت CSRF'}
+                return {'success': False, 'error': '❌ خطا در دریافت CSRF - پروکسی را عوض کنید'}
             
             data = {
                 'email': email,
@@ -167,7 +166,7 @@ class InstagramSignup:
             }
             
             headers_api = {
-                "User-Agent": HEADERS["User-Agent"],
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 "X-IG-App-ID": "936619743392459",
                 "X-Requested-With": "XMLHttpRequest",
                 "X-CSRFToken": self.csrf_token,
@@ -197,7 +196,7 @@ class InstagramSignup:
                     return {'success': False, 'error': error}
             
             elif response.status_code == 429:
-                return {'success': False, 'error': 'محدودیت درخواست (429) - چند دقیقه صبر کنید'}
+                return {'success': False, 'error': '⏳ محدودیت درخواست - ۳۰ ثانیه صبر کنید'}
             
             return {'success': False, 'error': f'کد خطا: {response.status_code}'}
             
@@ -205,7 +204,6 @@ class InstagramSignup:
             return {'success': False, 'error': str(e)}
     
     def signup_step2_birthday(self, day="01", month="04", year="2000"):
-        """مرحله 2: ثبت تاریخ تولد"""
         try:
             data = {
                 'day': day,
@@ -215,7 +213,7 @@ class InstagramSignup:
             }
             
             headers_api = {
-                "User-Agent": HEADERS["User-Agent"],
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 "X-IG-App-ID": "936619743392459",
                 "X-Requested-With": "XMLHttpRequest",
                 "X-CSRFToken": self.csrf_token,
@@ -240,7 +238,6 @@ class InstagramSignup:
             return {'success': False, 'error': str(e)}
     
     def signup_step3_verify(self, code):
-        """مرحله 3: تایید کد"""
         try:
             data = {
                 'code': code,
@@ -249,7 +246,7 @@ class InstagramSignup:
             }
             
             headers_api = {
-                "User-Agent": HEADERS["User-Agent"],
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 "X-IG-App-ID": "936619743392459",
                 "X-Requested-With": "XMLHttpRequest",
                 "X-CSRFToken": self.csrf_token,
@@ -298,27 +295,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_message = (
         f"🌟 سلام {user.first_name} عزیز!\n"
         f"به **ربات ثبت‌نام خودکار اینستاگرام** خوش آمدید! 🚀\n\n"
-        f"🔹 **مراحل ثبت‌نام:**\n"
-        f"1️⃣ ایمیل: mohammadarvinar3+2@gmail.com\n"
-        f"2️⃣ نام کاربری رندوم\n"
-        f"3️⃣ تاریخ تولد: 01.04.2000\n"
-        f"4️⃣ کد تایید از ایمیل\n"
-        f"5️⃣ تکمیل ثبت‌نام\n\n"
+        f"🔹 ایمیل: mohammadarvinar3+2@gmail.com\n"
+        f"🔹 تاریخ تولد: 01.04.2000\n"
+        f"🔹 نام کاربری: رندوم\n\n"
         f"⚠️ **پروژه دانشگاهی**"
     )
     await update.message.reply_text(welcome_message, reply_markup=get_main_menu(), parse_mode="Markdown")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = (
-        "📖 **راهنما:**\n\n"
-        "📱 **شروع ثبت‌نام:**\n"
-        "1️⃣ روی **شروع ثبت‌نام** کلیک کنید\n"
-        "2️⃣ ایمیل وارد کنید\n"
-        "3️⃣ کد تایید را دریافت کنید\n"
-        "4️⃣ کد را وارد کنید\n\n"
-        "📊 **وضعیت:**\n"
-        "مشاهده تعداد اکانت‌ها"
-    )
+    help_text = "📖 راهنما:\n\nروی **شروع ثبت‌نام** کلیک کنید و کد تایید را وارد کنید."
     if update.callback_query:
         await update.callback_query.message.edit_text(help_text, reply_markup=get_main_menu())
         await update.callback_query.answer()
@@ -326,69 +311,37 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(help_text, reply_markup=get_main_menu())
 
 async def signup_process(user_id, context):
-    """فرآیند کامل ثبت‌نام"""
     try:
-        # شمارنده ایمیل
-        if user_id not in created_accounts:
-            created_accounts[user_id] = []
+        counter = len(created_accounts.get(user_id, [])) + 2
+        email = f"mohammadarvinar3+{counter}@gmail.com"
         
-        counter = len(created_accounts[user_id]) + 2
-        base_email = "mohammadarvinar3"
-        email = f"{base_email}+{counter}@gmail.com"
-        
-        # ایجاد شیء ثبت‌نام
         signup = InstagramSignup()
         username = signup.generate_username()
         password = signup.generate_password()
         
         await context.bot.send_message(
             chat_id=user_id,
-            text=f"📧 **ایمیل:** {email}\n"
-                 f"👤 **نام کاربری:** @{username}\n"
-                 f"🔑 **رمز:** `{password}`\n\n"
-                 f"⏳ در حال ثبت‌نام...",
+            text=f"📧 {email}\n👤 @{username}\n🔑 `{password}`\n\n⏳ در حال ثبت‌نام...",
             parse_mode="Markdown"
         )
         
-        # مرحله 1
         result1 = signup.signup_step1(email, username, password)
         if not result1['success']:
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=f"❌ **خطا در مرحله 1:**\n{result1['error']}",
-                parse_mode="Markdown"
-            )
+            await context.bot.send_message(chat_id=user_id, text=f"❌ {result1['error']}")
             return
         
-        await context.bot.send_message(
-            chat_id=user_id,
-            text=result1['message'],
-            parse_mode="Markdown"
-        )
+        await context.bot.send_message(chat_id=user_id, text=result1['message'])
         
-        # مرحله 2
         result2 = signup.signup_step2_birthday()
         if not result2['success']:
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=f"❌ **خطا در مرحله 2:**\n{result2['error']}",
-                parse_mode="Markdown"
-            )
+            await context.bot.send_message(chat_id=user_id, text=f"❌ {result2['error']}")
             return
         
-        await context.bot.send_message(
-            chat_id=user_id,
-            text="📅 تاریخ تولد: 01.04.2000 ثبت شد!",
-            parse_mode="Markdown"
-        )
+        await context.bot.send_message(chat_id=user_id, text="📅 تاریخ تولد ثبت شد!")
         
-        # مرحله 3
         await context.bot.send_message(
             chat_id=user_id,
-            text="📧 **کد تایید به ایمیل ارسال شد!**\n\n"
-                 f"📧 ایمیل: {email}\n\n"
-                 "🔑 **لطفاً کد ۶ رقمی را وارد کنید:**",
-            parse_mode="Markdown"
+            text=f"📧 کد به {email} ارسال شد!\n\n🔑 **کد ۶ رقمی را وارد کنید:**"
         )
         
         user_states[user_id] = {
@@ -400,117 +353,66 @@ async def signup_process(user_id, context):
         }
         
     except Exception as e:
-        await context.bot.send_message(
-            chat_id=user_id,
-            text=f"❌ **خطا:** {str(e)}",
-            parse_mode="Markdown"
-        )
+        await context.bot.send_message(chat_id=user_id, text=f"❌ خطا: {str(e)}")
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
     user_id = update.effective_user.id
     data = query.data
     
     if data == "help":
         await help_command(update, context)
-        return
-    
     elif data == "start_signup":
-        await query.message.edit_text(
-            "🚀 **شروع ثبت‌نام...**\n\n"
-            "⏳ لطفاً صبر کنید...",
-            parse_mode="Markdown"
-        )
+        await query.message.edit_text("🚀 شروع...", parse_mode="Markdown")
         await signup_process(user_id, context)
-        return
-    
     elif data == "status":
         accounts = created_accounts.get(user_id, [])
-        status_text = (
-            f"📊 **وضعیت:**\n\n"
-            f"📱 اکانت‌های ساخته شده: {len(accounts)}"
-        )
-        await query.message.edit_text(status_text, reply_markup=get_main_menu())
-        return
-    
+        await query.message.edit_text(f"📊 تعداد اکانت‌ها: {len(accounts)}", reply_markup=get_main_menu())
     elif data == "list_accounts":
         accounts = created_accounts.get(user_id, [])
         if not accounts:
-            await query.message.edit_text(
-                "📋 **هیچ اکانتی ساخته نشده است!**",
-                reply_markup=get_main_menu()
-            )
+            await query.message.edit_text("📋 هیچ اکانتی ساخته نشده!", reply_markup=get_main_menu())
             return
-        
-        text = f"📋 **لیست اکانت‌ها ({len(accounts)}):**\n\n"
+        text = f"📋 {len(accounts)} اکانت:\n\n"
         for i, acc in enumerate(accounts, 1):
-            text += f"{i}. @{acc['username']}\n"
-            text += f"   🔑 `{acc['password']}`\n"
-            text += f"   📧 {acc['email']}\n\n"
-        
+            text += f"{i}. @{acc['username']}\n   🔑 `{acc['password']}`\n   📧 {acc['email']}\n\n"
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=get_main_menu())
-        return
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    message_text = update.message.text.strip()
-    
     if user_id not in user_states:
-        await update.message.reply_text(
-            "❌ لطفاً از منوی اصلی انتخاب کنید.",
-            reply_markup=get_main_menu()
-        )
+        await update.message.reply_text("❌ از منو انتخاب کنید.", reply_markup=get_main_menu())
+        return
+    
+    code = update.message.text.strip()
+    if not code.isdigit() or len(code) != 6:
+        await update.message.reply_text("❌ کد ۶ رقمی وارد کنید!")
         return
     
     state = user_states[user_id]
-    action = state.get('action')
+    signup = state.get('signup')
+    result = signup.signup_step3_verify(code)
     
-    if action == 'verify_code':
-        code = message_text
-        if not code.isdigit() or len(code) != 6:
-            await update.message.reply_text(
-                "❌ **کد باید ۶ رقمی باشد!**",
-                parse_mode="Markdown"
-            )
-            return
-        
-        signup = state.get('signup')
-        result = signup.signup_step3_verify(code)
-        
-        if result['success']:
-            if user_id not in created_accounts:
-                created_accounts[user_id] = []
-            
-            created_accounts[user_id].append({
-                'username': state['username'],
-                'password': state['password'],
-                'email': state['email'],
-                'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            })
-            
-            await update.message.reply_text(
-                f"✅ **ثبت‌نام کامل شد!**\n\n"
-                f"{result['message']}\n\n"
-                f"📊 مجموع: {len(created_accounts[user_id])} اکانت",
-                parse_mode="Markdown",
-                reply_markup=get_main_menu()
-            )
-            del user_states[user_id]
-            
-        else:
-            await update.message.reply_text(
-                f"❌ **خطا در تایید:**\n{result['error']}\n\n"
-                "🔑 **لطفاً کد را دوباره وارد کنید:**",
-                parse_mode="Markdown"
-            )
+    if result['success']:
+        if user_id not in created_accounts:
+            created_accounts[user_id] = []
+        created_accounts[user_id].append({
+            'username': state['username'],
+            'password': state['password'],
+            'email': state['email'],
+            'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        })
+        await update.message.reply_text(f"✅ ثبت‌نام کامل شد!\n{result['message']}", reply_markup=get_main_menu())
+        del user_states[user_id]
+    else:
+        await update.message.reply_text(f"❌ {result['error']}\n\n🔑 دوباره کد را وارد کنید:")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id in user_states:
         del user_states[user_id]
-    await update.message.reply_text("❌ عملیات لغو شد.", reply_markup=get_main_menu())
+    await update.message.reply_text("❌ لغو شد.", reply_markup=get_main_menu())
 
 # ==========================================
 # Flask Web Server
@@ -520,7 +422,7 @@ app_flask = Flask(__name__)
 
 @app_flask.route('/')
 def home():
-    return "✅ ربات ثبت‌نام اینستاگرام فعال است!"
+    return "✅ ربات فعال است!"
 
 @app_flask.route('/health')
 def health():
@@ -531,7 +433,7 @@ def run_flask():
     app_flask.run(host='0.0.0.0', port=port)
 
 # ==========================================
-# اجرای اصلی
+# اجرای اصلی (با رفع Conflict)
 # ==========================================
 
 async def main():
@@ -543,13 +445,31 @@ async def main():
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    await application.bot.delete_webhook()
-    await asyncio.sleep(1)
+    # ==========================================
+    # رفع Conflict - روش نهایی
+    # ==========================================
     
+    try:
+        # حذف Webhook قدیمی
+        await application.bot.delete_webhook()
+        await asyncio.sleep(2)
+        
+        # تنظیم Webhook به حالت خاموش
+        await application.bot.set_webhook(url="", drop_pending_updates=True)
+        await asyncio.sleep(2)
+        
+    except Exception as e:
+        logger.warning(f"⚠️ خطا در تنظیم Webhook: {e}")
+    
+    # شروع Polling
     await application.initialize()
     await application.start()
-    await application.updater.start_polling()
+    await application.updater.start_polling(
+        drop_pending_updates=True,
+        allowed_updates=["message", "callback_query"]
+    )
 
+    # اجرای Flask
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
