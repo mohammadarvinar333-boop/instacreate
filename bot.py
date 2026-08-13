@@ -34,7 +34,7 @@ created_accounts = {}
 email_counter = {}
 
 # ==========================================
-# پروکسی‌های شما (با فرمت user:pass@host:port)
+# پروکسی‌های شما (با چرخش خودکار)
 # ==========================================
 
 PROXY_LIST = [
@@ -50,25 +50,34 @@ PROXY_LIST = [
     "http://wdmpvyev:4mboe7l1a8vw@191.96.254.138:6185",
 ]
 
-# پروکسی‌های اضافی برای پشتیبان (بدون احراز هویت)
-BACKUP_PROXIES = [
-    "http://45.33.24.14:8080",
-    "http://103.152.112.162:80",
-    "http://103.152.112.169:80",
-]
-
 # ==========================================
-# مدیریت پروکسی
+# مدیریت پروکسی با چرخش
 # ==========================================
 
 class ProxyManager:
-    @staticmethod
-    def get_working_proxy():
-        """دریافت یک پروکسی کارآمد از لیست شما"""
-        # ابتدا پروکسی‌های شما را تست کن
-        for proxy in PROXY_LIST:
+    def __init__(self):
+        self.proxies = PROXY_LIST.copy()
+        self.current_index = 0
+        self.last_used = {}
+    
+    def get_next_proxy(self):
+        """دریافت پروکسی بعدی (چرخشی)"""
+        if not self.proxies:
+            return None
+        
+        # چرخش بین پروکسی‌ها
+        proxy = self.proxies[self.current_index]
+        self.current_index = (self.current_index + 1) % len(self.proxies)
+        
+        # ثبت زمان استفاده
+        self.last_used[proxy] = time.time()
+        return proxy
+    
+    def get_working_proxy(self):
+        """دریافت یک پروکسی کارآمد با تست"""
+        for _ in range(len(self.proxies)):
+            proxy = self.get_next_proxy()
             try:
-                # تست پروکسی با یک سرویس سریع
                 test = requests.get(
                     "https://api.ipify.org?format=json",
                     proxies={"http": proxy, "https": proxy},
@@ -78,36 +87,13 @@ class ProxyManager:
                     ip = test.json().get('ip')
                     logger.info(f"✅ پروکسی کارآمد: {proxy[:30]}... (IP: {ip})")
                     return proxy
-            except Exception as e:
-                logger.warning(f"⚠️ پروکسی {proxy[:30]}... ناموفق: {e}")
-                continue
-        
-        # اگر پروکسی‌های شما کار نکرد، از پشتیبان استفاده کن
-        for proxy in BACKUP_PROXIES:
-            try:
-                test = requests.get(
-                    "https://api.ipify.org?format=json",
-                    proxies={"http": proxy, "https": proxy},
-                    timeout=5
-                )
-                if test.status_code == 200:
-                    logger.info(f"✅ پروکسی پشتیبان کارآمد: {proxy}")
-                    return proxy
             except:
                 continue
         
-        logger.warning("⚠️ هیچ پروکسی کارآمدی پیدا نشد!")
-        return None
-    
-    @staticmethod
-    def normalize(proxy):
-        """نرمال‌سازی پروکسی"""
-        if not proxy:
-            return None
-        proxy = proxy.strip()
-        if not proxy.startswith(("http://", "https://")):
-            proxy = "http://" + proxy
-        return proxy
+        # اگر همه پروکسی‌ها ناموفق بودند، اولی را برگردان
+        return self.proxies[0] if self.proxies else None
+
+proxy_manager = ProxyManager()
 
 # ==========================================
 # کلاس ثبت‌نام اینستاگرام
@@ -132,8 +118,8 @@ class InstagramSignup:
             "Cache-Control": "max-age=0",
         })
         
-        # تنظیم پروکسی خودکار از لیست شما
-        proxy = ProxyManager.get_working_proxy()
+        # تنظیم پروکسی جدید (چرخشی)
+        proxy = proxy_manager.get_working_proxy()
         if proxy:
             self.session.proxies.update({"http": proxy, "https": proxy})
             logger.info(f"✅ استفاده از پروکسی: {proxy[:50]}...")
@@ -147,16 +133,25 @@ class InstagramSignup:
         self.user_id = None
         self.max_retries = 5
         
+    def change_proxy(self):
+        """تغییر به پروکسی جدید"""
+        new_proxy = proxy_manager.get_working_proxy()
+        if new_proxy:
+            self.session.proxies.update({"http": new_proxy, "https": new_proxy})
+            logger.info(f"🔄 تغییر به پروکسی جدید: {new_proxy[:50]}...")
+            return True
+        return False
+        
     def get_csrf_token(self):
-        """دریافت CSRF token با تلاش مجدد"""
+        """دریافت CSRF token با چرخش پروکسی در صورت نیاز"""
         for attempt in range(1, self.max_retries + 1):
             try:
-                # تاخیر تصادفی
-                time.sleep(random.uniform(1, 3))
+                # تاخیر تصادفی بیشتر
+                time.sleep(random.uniform(5, 15))
                 
                 response = self.session.get(
                     "https://www.instagram.com/",
-                    timeout=20,
+                    timeout=25,
                     allow_redirects=True
                 )
                 
@@ -168,14 +163,6 @@ class InstagramSignup:
                         logger.info(f"✅ CSRF دریافت شد (تلاش {attempt})")
                         return True
                 
-                # استخراج از هدر
-                csrf_header = response.headers.get('x-csrftoken')
-                if csrf_header:
-                    self.csrf_token = csrf_header
-                    self.session.cookies.set("csrftoken", self.csrf_token)
-                    logger.info(f"✅ CSRF از هدر (تلاش {attempt})")
-                    return True
-                
                 # استخراج از HTML
                 csrf_match = re.search(r'"csrf_token":"([^"]+)"', response.text)
                 if csrf_match:
@@ -184,21 +171,22 @@ class InstagramSignup:
                     logger.info(f"✅ CSRF از HTML (تلاش {attempt})")
                     return True
                 
-                # اگر خطای ۴۲۹ بود، پروکسی جدید بگیر
+                # اگر خطای ۴۲۹ بود، پروکسی را عوض کن
                 if response.status_code == 429:
                     logger.warning(f"⚠️ خطای ۴۲۹ در تلاش {attempt} - تغییر پروکسی...")
-                    new_proxy = ProxyManager.get_working_proxy()
-                    if new_proxy:
-                        self.session.proxies.update({"http": new_proxy, "https": new_proxy})
-                        logger.info(f"🔄 پروکسی جدید: {new_proxy[:50]}...")
-                    time.sleep(10)
+                    self.change_proxy()
+                    time.sleep(15)  # صبر بیشتر
                     continue
                 
                 logger.warning(f"⚠️ تلاش {attempt}: CSRF دریافت نشد (HTTP {response.status_code})")
                 
             except Exception as e:
                 logger.warning(f"⚠️ تلاش {attempt}: {e}")
-                time.sleep(random.uniform(2, 5))
+                time.sleep(random.uniform(5, 10))
+                
+                # تغییر پروکسی در صورت خطا
+                if attempt % 2 == 0:
+                    self.change_proxy()
         
         return False
     
@@ -216,60 +204,75 @@ class InstagramSignup:
     
     def signup_step1(self, email, username, password):
         """مرحله 1: ارسال اطلاعات اولیه"""
-        try:
-            if not self.get_csrf_token():
-                return {'success': False, 'error': '❌ خطا در دریافت CSRF - پروکسی را عوض کنید'}
-            
-            data = {
-                'email': email,
-                'username': username,
-                'password': password,
-                'first_name': username,
-                'csrfmiddlewaretoken': self.csrf_token
-            }
-            
-            headers_api = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "X-IG-App-ID": "936619743392459",
-                "X-Requested-With": "XMLHttpRequest",
-                "X-CSRFToken": self.csrf_token,
-                "X-Instagram-AJAX": "1",
-                "Accept": "application/json, text/plain, */*",
-                "Referer": "https://www.instagram.com/",
-                "Origin": "https://www.instagram.com",
-            }
-            
-            url = "https://www.instagram.com/accounts/web_create_ajax/attempt/"
-            response = self.session.post(url, data=data, headers=headers_api, timeout=25)
-            
-            if response.status_code == 200:
-                result = response.json()
+        for attempt in range(1, 4):  # ۳ بار تلاش با پروکسی‌های مختلف
+            try:
+                if not self.get_csrf_token():
+                    if attempt < 3:
+                        logger.warning(f"🔄 تلاش مجدد با پروکسی جدید ({attempt}/3)")
+                        self.change_proxy()
+                        time.sleep(10)
+                        continue
+                    return {'success': False, 'error': '❌ خطا در دریافت CSRF - همه پروکسی‌ها ناموفق'}
                 
-                if result.get('status') == 'ok':
-                    self.email = email
-                    self.username = username
-                    self.password = password
-                    self.user_id = result.get('user_id')
-                    return {
-                        'success': True,
-                        'message': '✅ کد تایید به ایمیل ارسال شد!',
-                        'user_id': self.user_id
-                    }
+                data = {
+                    'email': email,
+                    'username': username,
+                    'password': password,
+                    'first_name': username,
+                    'csrfmiddlewaretoken': self.csrf_token
+                }
+                
+                headers_api = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "X-IG-App-ID": "936619743392459",
+                    "X-Requested-With": "XMLHttpRequest",
+                    "X-CSRFToken": self.csrf_token,
+                    "X-Instagram-AJAX": "1",
+                    "Accept": "application/json, text/plain, */*",
+                    "Referer": "https://www.instagram.com/",
+                    "Origin": "https://www.instagram.com",
+                }
+                
+                url = "https://www.instagram.com/accounts/web_create_ajax/attempt/"
+                response = self.session.post(url, data=data, headers=headers_api, timeout=30)
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    
+                    if result.get('status') == 'ok':
+                        self.email = email
+                        self.username = username
+                        self.password = password
+                        self.user_id = result.get('user_id')
+                        return {
+                            'success': True,
+                            'message': '✅ کد تایید به ایمیل ارسال شد!',
+                            'user_id': self.user_id
+                        }
+                    else:
+                        error = result.get('errors', {}).get('username', ['خطای نامشخص'])[0]
+                        return {'success': False, 'error': error}
+                
+                elif response.status_code == 429:
+                    logger.warning(f"⚠️ خطای ۴۲۹ در ثبت‌نام (تلاش {attempt}) - تغییر پروکسی...")
+                    self.change_proxy()
+                    time.sleep(20)
+                    continue
+                
                 else:
-                    error = result.get('errors', {}).get('username', ['خطای نامشخص'])[0]
-                    return {'success': False, 'error': error}
-            
-            elif response.status_code == 429:
-                return {'success': False, 'error': '⏳ محدودیت درخواست - لطفاً بعداً تلاش کنید'}
-            
-            else:
-                return {'success': False, 'error': f'کد خطا: {response.status_code}'}
-            
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
+                    return {'success': False, 'error': f'کد خطا: {response.status_code}'}
+                
+            except Exception as e:
+                logger.warning(f"⚠️ خطا در تلاش {attempt}: {e}")
+                if attempt < 3:
+                    self.change_proxy()
+                    time.sleep(10)
+                    continue
+                return {'success': False, 'error': str(e)}
+        
+        return {'success': False, 'error': 'خطا پس از ۳ تلاش'}
     
     def signup_step2_birthday(self):
-        """مرحله 2: ثبت تاریخ تولد"""
         try:
             data = {
                 'day': '01',
@@ -304,7 +307,6 @@ class InstagramSignup:
             return {'success': False, 'error': str(e)}
     
     def signup_step3_verify(self, code):
-        """مرحله 3: تایید کد"""
         try:
             data = {
                 'code': code,
@@ -353,10 +355,6 @@ def get_main_menu():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# ==========================================
-# دستورات ربات
-# ==========================================
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     welcome_message = (
@@ -378,10 +376,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.answer()
     else:
         await update.message.reply_text(help_text, reply_markup=get_main_menu())
-
-# ==========================================
-# فرآیند ثبت‌نام
-# ==========================================
 
 async def signup_process(user_id, context):
     """فرآیند کامل ثبت‌نام"""
@@ -412,9 +406,9 @@ async def signup_process(user_id, context):
                 chat_id=user_id,
                 text=f"❌ **خطا در مرحله 1:**\n{result1['error']}\n\n"
                      f"💡 **راه‌حل:**\n"
-                     f"1️⃣ چند دقیقه صبر کنید\n"
-                     f"2️⃣ پروکسی جدید تست کنید\n"
-                     f"3️⃣ دوباره تلاش کنید",
+                     f"1️⃣ ۳۰ ثانیه صبر کنید و دوباره تلاش کنید\n"
+                     f"2️⃣ اینستاگرام محدودیت درخواست دارد\n"
+                     f"3️⃣ پروکسی به صورت خودکار عوض می‌شود",
                 parse_mode="Markdown"
             )
             return
@@ -466,10 +460,6 @@ async def signup_process(user_id, context):
             parse_mode="Markdown"
         )
 
-# ==========================================
-# مدیریت دکمه‌ها
-# ==========================================
-
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -504,10 +494,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += f"   📧 {acc['email']}\n\n"
         
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=get_main_menu())
-
-# ==========================================
-# دریافت پیام‌ها
-# ==========================================
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
