@@ -12,9 +12,6 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 from flask import Flask
 import threading
 import os
-import imaplib
-import email
-from email.header import decode_header
 
 # ==========================================
 # تنظیمات اولیه
@@ -25,10 +22,6 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-
-# ==========================================
-# توکن ربات (توکن جدید شما)
-# ==========================================
 
 TELEGRAM_TOKEN = "8325521161:AAGU8j0p2iZMxq2ZUqMDYNPon3zgXqR9jyA"
 
@@ -41,20 +34,25 @@ created_accounts = {}
 email_counter = {}
 
 # ==========================================
-# هدرهای اینستاگرام
+# هدرهای کامل اینستاگرام
 # ==========================================
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+    "Accept-Language": "en-US,en;q=0.9,fa;q=0.8",
     "Accept-Encoding": "gzip, deflate, br",
     "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1"
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+    "Cache-Control": "max-age=0"
 }
 
 # ==========================================
-# کلاس ثبت‌نام اینستاگرام
+# کلاس ثبت‌نام اینستاگرام (با هدرهای کامل‌تر)
 # ==========================================
 
 class InstagramSignup:
@@ -68,20 +66,56 @@ class InstagramSignup:
         self.user_id = None
         
     def get_csrf_token(self):
-        """دریافت CSRF token از صفحه اصلی"""
+        """دریافت CSRF token از صفحه اصلی با هدرهای کامل"""
         try:
-            response = self.session.get("https://www.instagram.com/", timeout=10)
+            # هدرهای اضافی برای شبیه‌سازی مرورگر واقعی
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+                "Accept-Language": "en-US,en;q=0.9,fa;q=0.8",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Connection": "keep-alive",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+                "Sec-Fetch-User": "?1",
+                "Upgrade-Insecure-Requests": "1",
+                "Cache-Control": "max-age=0"
+            }
+            
+            # دریافت صفحه اصلی
+            response = self.session.get("https://www.instagram.com/", headers=headers, timeout=15)
             
             if response.status_code == 200:
+                # استخراج CSRF از کوکی‌ها
                 for cookie in self.session.cookies:
                     if cookie.name == 'csrftoken':
                         self.csrf_token = cookie.value
                         self.session.cookies.set("csrftoken", self.csrf_token)
+                        logger.info(f"✅ CSRF Token دریافت شد: {self.csrf_token[:20]}...")
                         return True
+                
+                # اگر در کوکی نبود، از HTML استخراج کن
+                csrf_match = re.search(r'"csrf_token":"([^"]+)"', response.text)
+                if csrf_match:
+                    self.csrf_token = csrf_match.group(1)
+                    self.session.cookies.set("csrftoken", self.csrf_token)
+                    logger.info(f"✅ CSRF Token از HTML: {self.csrf_token[:20]}...")
+                    return True
+                
+                # اگر از طریق متا تگ
+                csrf_match = re.search(r'<meta name="csrf-token" content="([^"]+)"', response.text)
+                if csrf_match:
+                    self.csrf_token = csrf_match.group(1)
+                    self.session.cookies.set("csrftoken", self.csrf_token)
+                    logger.info(f"✅ CSRF Token از متا: {self.csrf_token[:20]}...")
+                    return True
             
+            logger.error(f"❌ خطا در دریافت CSRF: {response.status_code}")
             return False
+            
         except Exception as e:
-            logger.error(f"خطا در دریافت CSRF: {e}")
+            logger.error(f"❌ خطا در دریافت CSRF: {e}")
             return False
     
     def generate_username(self):
@@ -99,50 +133,28 @@ class InstagramSignup:
         """تولید ایمیل با شمارنده"""
         return f"{base_email}+{counter}@gmail.com"
     
-    def get_verification_code_from_email(self, email, password="YourAppPassword"):
-        """دریافت کد تایید از جیمیل"""
-        try:
-            # اتصال به ایمیل
-            mail = imaplib.IMAP4_SSL("imap.gmail.com")
-            mail.login(email, password)
-            mail.select("inbox")
-            
-            # جستجوی ایمیل‌های جدید
-            status, messages = mail.search(None, "UNSEEN", 'SUBJECT "Instagram"')
-            
-            if status == "OK":
-                for num in messages[0].split():
-                    status, data = mail.fetch(num, "(RFC822)")
-                    if status == "OK":
-                        # استخراج کد از ایمیل
-                        msg = email.message_from_bytes(data[0][1])
-                        body = ""
-                        if msg.is_multipart():
-                            for part in msg.walk():
-                                if part.get_content_type() == "text/plain":
-                                    body = part.get_payload(decode=True).decode()
-                                    break
-                        else:
-                            body = msg.get_payload(decode=True).decode()
-                        
-                        # جستجوی کد 6 رقمی
-                        code_match = re.search(r'\b(\d{6})\b', body)
-                        if code_match:
-                            return code_match.group(1)
-            
-            mail.close()
-            mail.logout()
-            return None
-            
-        except Exception as e:
-            logger.error(f"خطا در دریافت کد: {e}")
-            return None
-    
     def signup_step1(self, email, username, password):
         """مرحله 1: ارسال اطلاعات اولیه"""
         try:
             if not self.get_csrf_token():
-                return {'success': False, 'error': 'خطا در دریافت CSRF'}
+                return {'success': False, 'error': 'خطا در دریافت CSRF - لطفاً دوباره تلاش کنید'}
+            
+            # هدرهای API
+            headers_api = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+                "X-IG-App-ID": "936619743392459",
+                "X-Requested-With": "XMLHttpRequest",
+                "X-CSRFToken": self.csrf_token,
+                "Accept": "application/json",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Referer": "https://www.instagram.com/",
+                "Origin": "https://www.instagram.com",
+                "Connection": "keep-alive",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin"
+            }
             
             # اطلاعات ثبت‌نام
             data = {
@@ -153,58 +165,81 @@ class InstagramSignup:
                 'csrfmiddlewaretoken': self.csrf_token
             }
             
-            headers_api = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "X-IG-App-ID": "936619743392459",
-                "X-Requested-With": "XMLHttpRequest",
-                "X-CSRFToken": self.csrf_token,
-                "Accept": "application/json",
-                "Referer": "https://www.instagram.com/"
-            }
-            
             url = "https://www.instagram.com/accounts/web_create_ajax/attempt/"
-            response = self.session.post(url, data=data, headers=headers_api, timeout=15)
+            response = self.session.post(url, data=data, headers=headers_api, timeout=20)
+            
+            logger.info(f"📡 پاسخ سرور: {response.status_code}")
             
             if response.status_code == 200:
-                result = response.json()
-                
-                if result.get('status') == 'ok':
-                    self.email = email
-                    self.username = username
-                    self.password = password
-                    self.user_id = result.get('user_id')
+                try:
+                    result = response.json()
+                    logger.info(f"📦 پاسخ: {json.dumps(result, indent=2)[:200]}")
                     
-                    return {
-                        'success': True,
-                        'message': '✅ مرحله 1 موفق! کد تایید به ایمیل ارسال شد.',
-                        'user_id': self.user_id
-                    }
-                else:
-                    error = result.get('errors', {}).get('username', ['خطای نامشخص'])[0]
-                    return {'success': False, 'error': error}
+                    if result.get('status') == 'ok':
+                        self.email = email
+                        self.username = username
+                        self.password = password
+                        self.user_id = result.get('user_id')
+                        
+                        return {
+                            'success': True,
+                            'message': '✅ مرحله 1 موفق! کد تایید به ایمیل ارسال شد.',
+                            'user_id': self.user_id
+                        }
+                    else:
+                        # بررسی خطاهای مختلف
+                        if 'errors' in result:
+                            if 'username' in result['errors']:
+                                error = result['errors']['username'][0]
+                            elif 'email' in result['errors']:
+                                error = result['errors']['email'][0]
+                            else:
+                                error = str(result['errors'])
+                        else:
+                            error = result.get('message', 'خطای نامشخص')
+                        
+                        return {'success': False, 'error': error}
+                        
+                except json.JSONDecodeError:
+                    return {'success': False, 'error': 'پاسخ نامعتبر از سرور'}
             
-            return {'success': False, 'error': f'کد خطا: {response.status_code}'}
+            elif response.status_code == 429:
+                return {'success': False, 'error': 'محدودیت درخواست - لطفاً بعداً تلاش کنید'}
+            
+            elif response.status_code == 403:
+                return {'success': False, 'error': 'دسترسی ممنوع - IP شما مسدود شده است'}
+            
+            else:
+                return {'success': False, 'error': f'کد خطا: {response.status_code}'}
+            
+        except requests.exceptions.Timeout:
+            return {'success': False, 'error': 'زمان درخواست به پایان رسید - لطفاً دوباره تلاش کنید'}
+            
+        except requests.exceptions.ConnectionError:
+            return {'success': False, 'error': 'خطا در اتصال به اینستاگرام'}
             
         except Exception as e:
+            logger.error(f"❌ خطا: {e}")
             return {'success': False, 'error': str(e)}
     
     def signup_step2_birthday(self, day="01", month="04", year="2000"):
         """مرحله 2: ثبت تاریخ تولد"""
         try:
+            headers_api = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+                "X-IG-App-ID": "936619743392459",
+                "X-Requested-With": "XMLHttpRequest",
+                "X-CSRFToken": self.csrf_token,
+                "Accept": "application/json",
+                "Referer": "https://www.instagram.com/",
+                "Origin": "https://www.instagram.com"
+            }
+            
             data = {
                 'day': day,
                 'month': month,
                 'year': year,
                 'csrfmiddlewaretoken': self.csrf_token
-            }
-            
-            headers_api = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "X-IG-App-ID": "936619743392459",
-                "X-Requested-With": "XMLHttpRequest",
-                "X-CSRFToken": self.csrf_token,
-                "Accept": "application/json",
-                "Referer": "https://www.instagram.com/"
             }
             
             url = "https://www.instagram.com/accounts/web_create_ajax/birthday/"
@@ -225,19 +260,20 @@ class InstagramSignup:
     def signup_step3_verify(self, code):
         """مرحله 3: تایید کد"""
         try:
-            data = {
-                'code': code,
-                'user_id': self.user_id,
-                'csrfmiddlewaretoken': self.csrf_token
-            }
-            
             headers_api = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
                 "X-IG-App-ID": "936619743392459",
                 "X-Requested-With": "XMLHttpRequest",
                 "X-CSRFToken": self.csrf_token,
                 "Accept": "application/json",
-                "Referer": "https://www.instagram.com/"
+                "Referer": "https://www.instagram.com/",
+                "Origin": "https://www.instagram.com"
+            }
+            
+            data = {
+                'code': code,
+                'user_id': self.user_id,
+                'csrfmiddlewaretoken': self.csrf_token
             }
             
             url = "https://www.instagram.com/accounts/web_create_ajax/verify_code/"
@@ -259,7 +295,7 @@ class InstagramSignup:
             return {'success': False, 'error': str(e)}
 
 # ==========================================
-# دکمه‌های ربات
+# بقیه کدها (دکمه‌ها، دستورات، Flask و ...)
 # ==========================================
 
 def get_main_menu():
@@ -270,10 +306,6 @@ def get_main_menu():
         [InlineKeyboardButton("ℹ️ راهنما", callback_data="help")]
     ]
     return InlineKeyboardMarkup(keyboard)
-
-# ==========================================
-# دستورات ربات
-# ==========================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -295,8 +327,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📖 **راهنما:**\n\n"
         "📱 **شروع ثبت‌نام:**\n"
         "1️⃣ روی **شروع ثبت‌نام** کلیک کنید\n"
-        "2️⃣ ایمیل وارد کنید (پیش‌فرض: mohammadarvinar3+2@gmail.com)\n"
-        "3️⃣ کد تایید را از ایمیل دریافت کنید\n"
+        "2️⃣ ایمیل وارد کنید\n"
+        "3️⃣ کد تایید را دریافت کنید\n"
         "4️⃣ کد را وارد کنید تا ثبت‌نام کامل شود\n\n"
         "📊 **وضعیت:**\n"
         "مشاهده تعداد اکانت‌های ساخته شده"
@@ -306,10 +338,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.answer()
     else:
         await update.message.reply_text(help_text, reply_markup=get_main_menu())
-
-# ==========================================
-# ثبت‌نام خودکار
-# ==========================================
 
 async def signup_process(user_id, context):
     """فرآیند کامل ثبت‌نام"""
@@ -342,7 +370,12 @@ async def signup_process(user_id, context):
         if not result1['success']:
             await context.bot.send_message(
                 chat_id=user_id,
-                text=f"❌ **خطا در مرحله 1:**\n{result1['error']}",
+                text=f"❌ **خطا در مرحله 1:**\n{result1['error']}\n\n"
+                     f"💡 **راه‌حل‌ها:**\n"
+                     f"1️⃣ چند دقیقه صبر کنید و دوباره تلاش کنید\n"
+                     f"2️⃣ اینستاگرام محدودیت IP دارد\n"
+                     f"3️⃣ از VPN یا Proxy استفاده کنید\n"
+                     f"4️⃣ با ایمیل دیگری تست کنید",
                 parse_mode="Markdown"
             )
             return
@@ -444,10 +477,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=get_main_menu())
         return
 
-# ==========================================
-# دریافت پیام‌ها
-# ==========================================
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     message_text = update.message.text.strip()
@@ -463,7 +492,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action = state.get('action')
     
     if action == 'verify_code':
-        # دریافت کد تایید
         code = message_text
         
         if not code.isdigit() or len(code) != 6:
@@ -475,12 +503,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         signup = state.get('signup')
-        
-        # تایید کد
         result = signup.signup_step3_verify(code)
         
         if result['success']:
-            # ذخیره اکانت
             if user_id not in created_accounts:
                 created_accounts[user_id] = []
             
@@ -491,7 +516,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             })
             
-            # افزایش شمارنده برای ایمیل بعدی
             if user_id in email_counter:
                 email_counter[user_id] += 1
             
@@ -504,7 +528,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=get_main_menu()
             )
             
-            # حذف وضعیت
             del user_states[user_id]
             
         else:
