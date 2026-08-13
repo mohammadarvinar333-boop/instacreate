@@ -52,7 +52,7 @@ HEADERS = {
 }
 
 # ==========================================
-# کلاس ثبت‌نام اینستاگرام (با هدرهای کامل‌تر)
+# کلاس ثبت‌نام اینستاگرام با مدیریت خطای 429
 # ==========================================
 
 class InstagramSignup:
@@ -64,59 +64,66 @@ class InstagramSignup:
         self.username = None
         self.password = None
         self.user_id = None
+        self.max_retries = 3
         
     def get_csrf_token(self):
-        """دریافت CSRF token از صفحه اصلی با هدرهای کامل"""
-        try:
-            # هدرهای اضافی برای شبیه‌سازی مرورگر واقعی
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-                "Accept-Language": "en-US,en;q=0.9,fa;q=0.8",
-                "Accept-Encoding": "gzip, deflate, br",
-                "Connection": "keep-alive",
-                "Sec-Fetch-Dest": "document",
-                "Sec-Fetch-Mode": "navigate",
-                "Sec-Fetch-Site": "none",
-                "Sec-Fetch-User": "?1",
-                "Upgrade-Insecure-Requests": "1",
-                "Cache-Control": "max-age=0"
-            }
-            
-            # دریافت صفحه اصلی
-            response = self.session.get("https://www.instagram.com/", headers=headers, timeout=15)
-            
-            if response.status_code == 200:
-                # استخراج CSRF از کوکی‌ها
-                for cookie in self.session.cookies:
-                    if cookie.name == 'csrftoken':
-                        self.csrf_token = cookie.value
+        """دریافت CSRF token با مدیریت خطای 429"""
+        for attempt in range(self.max_retries):
+            try:
+                # تأخیر بین تلاش‌ها (افزایشی)
+                if attempt > 0:
+                    wait_time = attempt * 30  # 30, 60, 90 ثانیه
+                    logger.info(f"⏳ صبر {wait_time} ثانیه قبل از تلاش مجدد...")
+                    time.sleep(wait_time)
+                
+                # هدرهای تصادفی برای شبیه‌سازی کاربران مختلف
+                user_agents = [
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+                ]
+                
+                headers = HEADERS.copy()
+                headers["User-Agent"] = random.choice(user_agents)
+                
+                # استفاده از IP مختلف (با Proxy)
+                # برای تست، از یک Proxy رایگان استفاده کنید
+                # proxies = {'http': 'http://proxy.com:8080', 'https': 'https://proxy.com:8080'}
+                # self.session.proxies.update(proxies)
+                
+                response = self.session.get("https://www.instagram.com/", headers=headers, timeout=20)
+                
+                if response.status_code == 200:
+                    # استخراج CSRF از کوکی
+                    for cookie in self.session.cookies:
+                        if cookie.name == 'csrftoken':
+                            self.csrf_token = cookie.value
+                            self.session.cookies.set("csrftoken", self.csrf_token)
+                            logger.info(f"✅ CSRF Token دریافت شد (تلاش {attempt + 1})")
+                            return True
+                    
+                    # استخراج از HTML
+                    csrf_match = re.search(r'"csrf_token":"([^"]+)"', response.text)
+                    if csrf_match:
+                        self.csrf_token = csrf_match.group(1)
                         self.session.cookies.set("csrftoken", self.csrf_token)
-                        logger.info(f"✅ CSRF Token دریافت شد: {self.csrf_token[:20]}...")
+                        logger.info(f"✅ CSRF Token از HTML (تلاش {attempt + 1})")
                         return True
                 
-                # اگر در کوکی نبود، از HTML استخراج کن
-                csrf_match = re.search(r'"csrf_token":"([^"]+)"', response.text)
-                if csrf_match:
-                    self.csrf_token = csrf_match.group(1)
-                    self.session.cookies.set("csrftoken", self.csrf_token)
-                    logger.info(f"✅ CSRF Token از HTML: {self.csrf_token[:20]}...")
-                    return True
+                elif response.status_code == 429:
+                    logger.warning(f"⚠️ خطای 429 - محدودیت درخواست (تلاش {attempt + 1})")
+                    continue
                 
-                # اگر از طریق متا تگ
-                csrf_match = re.search(r'<meta name="csrf-token" content="([^"]+)"', response.text)
-                if csrf_match:
-                    self.csrf_token = csrf_match.group(1)
-                    self.session.cookies.set("csrftoken", self.csrf_token)
-                    logger.info(f"✅ CSRF Token از متا: {self.csrf_token[:20]}...")
-                    return True
-            
-            logger.error(f"❌ خطا در دریافت CSRF: {response.status_code}")
-            return False
-            
-        except Exception as e:
-            logger.error(f"❌ خطا در دریافت CSRF: {e}")
-            return False
+                else:
+                    logger.error(f"❌ کد خطا: {response.status_code}")
+                    return False
+                    
+            except Exception as e:
+                logger.error(f"❌ خطا در تلاش {attempt + 1}: {e}")
+                continue
+        
+        logger.error("❌ همه تلاش‌ها برای دریافت CSRF ناموفق بود")
+        return False
     
     def generate_username(self):
         """تولید نام کاربری رندوم"""
@@ -137,7 +144,7 @@ class InstagramSignup:
         """مرحله 1: ارسال اطلاعات اولیه"""
         try:
             if not self.get_csrf_token():
-                return {'success': False, 'error': 'خطا در دریافت CSRF - لطفاً دوباره تلاش کنید'}
+                return {'success': False, 'error': 'خطا در دریافت CSRF - لطفاً بعداً تلاش کنید'}
             
             # هدرهای API
             headers_api = {
@@ -168,12 +175,9 @@ class InstagramSignup:
             url = "https://www.instagram.com/accounts/web_create_ajax/attempt/"
             response = self.session.post(url, data=data, headers=headers_api, timeout=20)
             
-            logger.info(f"📡 پاسخ سرور: {response.status_code}")
-            
             if response.status_code == 200:
                 try:
                     result = response.json()
-                    logger.info(f"📦 پاسخ: {json.dumps(result, indent=2)[:200]}")
                     
                     if result.get('status') == 'ok':
                         self.email = email
@@ -187,39 +191,26 @@ class InstagramSignup:
                             'user_id': self.user_id
                         }
                     else:
-                        # بررسی خطاهای مختلف
-                        if 'errors' in result:
-                            if 'username' in result['errors']:
-                                error = result['errors']['username'][0]
-                            elif 'email' in result['errors']:
-                                error = result['errors']['email'][0]
-                            else:
-                                error = str(result['errors'])
+                        error = result.get('errors', {})
+                        if 'username' in error:
+                            error_msg = error['username'][0]
+                        elif 'email' in error:
+                            error_msg = error['email'][0]
                         else:
-                            error = result.get('message', 'خطای نامشخص')
+                            error_msg = result.get('message', 'خطای نامشخص')
                         
-                        return {'success': False, 'error': error}
+                        return {'success': False, 'error': error_msg}
                         
                 except json.JSONDecodeError:
                     return {'success': False, 'error': 'پاسخ نامعتبر از سرور'}
             
             elif response.status_code == 429:
-                return {'success': False, 'error': 'محدودیت درخواست - لطفاً بعداً تلاش کنید'}
-            
-            elif response.status_code == 403:
-                return {'success': False, 'error': 'دسترسی ممنوع - IP شما مسدود شده است'}
+                return {'success': False, 'error': 'محدودیت درخواست - ۳۰ ثانیه صبر کنید'}
             
             else:
                 return {'success': False, 'error': f'کد خطا: {response.status_code}'}
             
-        except requests.exceptions.Timeout:
-            return {'success': False, 'error': 'زمان درخواست به پایان رسید - لطفاً دوباره تلاش کنید'}
-            
-        except requests.exceptions.ConnectionError:
-            return {'success': False, 'error': 'خطا در اتصال به اینستاگرام'}
-            
         except Exception as e:
-            logger.error(f"❌ خطا: {e}")
             return {'success': False, 'error': str(e)}
     
     def signup_step2_birthday(self, day="01", month="04", year="2000"):
@@ -295,7 +286,7 @@ class InstagramSignup:
             return {'success': False, 'error': str(e)}
 
 # ==========================================
-# بقیه کدها (دکمه‌ها، دستورات، Flask و ...)
+# دکمه‌های ربات
 # ==========================================
 
 def get_main_menu():
@@ -306,6 +297,10 @@ def get_main_menu():
         [InlineKeyboardButton("ℹ️ راهنما", callback_data="help")]
     ]
     return InlineKeyboardMarkup(keyboard)
+
+# ==========================================
+# دستورات ربات
+# ==========================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -339,9 +334,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(help_text, reply_markup=get_main_menu())
 
+# ==========================================
+# ثبت‌نام خودکار با تأخیر
+# ==========================================
+
 async def signup_process(user_id, context):
-    """فرآیند کامل ثبت‌نام"""
+    """فرآیند کامل ثبت‌نام با تأخیر"""
     try:
+        # تأخیر ۵ ثانیه قبل از شروع
+        await asyncio.sleep(5)
+        
         # شمارنده ایمیل
         if user_id not in email_counter:
             email_counter[user_id] = 2
@@ -364,6 +366,9 @@ async def signup_process(user_id, context):
             parse_mode="Markdown"
         )
         
+        # تأخیر قبل از مرحله 1
+        await asyncio.sleep(3)
+        
         # مرحله 1: ثبت اطلاعات
         result1 = signup.signup_step1(email, username, password)
         
@@ -374,8 +379,7 @@ async def signup_process(user_id, context):
                      f"💡 **راه‌حل‌ها:**\n"
                      f"1️⃣ چند دقیقه صبر کنید و دوباره تلاش کنید\n"
                      f"2️⃣ اینستاگرام محدودیت IP دارد\n"
-                     f"3️⃣ از VPN یا Proxy استفاده کنید\n"
-                     f"4️⃣ با ایمیل دیگری تست کنید",
+                     f"3️⃣ از VPN یا Proxy استفاده کنید",
                 parse_mode="Markdown"
             )
             return
@@ -385,6 +389,9 @@ async def signup_process(user_id, context):
             text=result1['message'],
             parse_mode="Markdown"
         )
+        
+        # تأخیر قبل از مرحله 2
+        await asyncio.sleep(2)
         
         # مرحله 2: تاریخ تولد
         result2 = signup.signup_step2_birthday()
@@ -428,6 +435,10 @@ async def signup_process(user_id, context):
             text=f"❌ **خطا:** {str(e)}",
             parse_mode="Markdown"
         )
+
+# ==========================================
+# بقیه کدها (دکمه‌ها، مدیریت پیام‌ها، Flask)
+# ==========================================
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
